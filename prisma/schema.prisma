@@ -1,0 +1,356 @@
+// ============================================================
+// AgroGestión Pro — Esquema de Base de Datos
+// Estancia La Criolla (cliente piloto)
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================
+// AUTENTICACIÓN Y USUARIOS
+// ============================================================
+
+enum RolUsuario {
+  ADMIN
+  GERENTE
+  CAPATAZ
+  OPERARIO
+  CONTRATISTA
+}
+
+model Usuario {
+  id            String      @id @default(uuid())
+  nombre        String
+  email         String      @unique
+  passwordHash  String
+  rol           RolUsuario
+  activo        Boolean     @default(true)
+  establecimientoId String
+  establecimiento   Establecimiento @relation(fields: [establecimientoId], references: [id])
+  creadoEn      DateTime    @default(now())
+
+  laboresRegistradas   Labor[]              @relation("LaborResponsable")
+  eventosSanitarios    EventoSanitario[]    @relation("EventoResponsable")
+}
+
+// Multi-tenant: cada cliente (establecimiento) es independiente.
+// Esto te permite vender el mismo sistema a múltiples campos.
+model Establecimiento {
+  id            String   @id @default(uuid())
+  nombre        String   // "Estancia La Criolla"
+  ubicacion     String?
+  hectareasTotales Decimal? @db.Decimal(10,2)
+  creadoEn      DateTime @default(now())
+
+  usuarios      Usuario[]
+  potreros      Potrero[]
+  lotes         Lote[]
+  animales      Animal[]
+  maquinas      Maquina[]
+  insumos       Insumo[]
+  pivotes       Pivote[]
+}
+
+// ============================================================
+// GANADERÍA
+// ============================================================
+
+enum CategoriaAnimal {
+  VACA_CRIA
+  VAQUILLONA
+  TERNERO
+  TERNERA
+  NOVILLO
+  TORO
+}
+
+enum EstadoAnimal {
+  ACTIVO
+  VENDIDO
+  MUERTO
+  FAENADO
+}
+
+model Animal {
+  id                String          @id @default(uuid())
+  caravanaInterna   String
+  caravanaSenasa    String?         @unique  // Trazabilidad SENASA Res. 530/2025
+  categoria         CategoriaAnimal
+  fechaNacimiento   DateTime?
+  fechaIngreso      DateTime
+  procedencia       String          // "Nacido en establecimiento", "Comprado en remate", etc
+  estado            EstadoAnimal    @default(ACTIVO)
+  madreId           String?
+  madre             Animal?         @relation("Maternidad", fields: [madreId], references: [id])
+  crias             Animal[]        @relation("Maternidad")
+
+  establecimientoId String
+  establecimiento   Establecimiento @relation(fields: [establecimientoId], references: [id])
+  potreroActualId   String?
+  potreroActual     Potrero?        @relation(fields: [potreroActualId], references: [id])
+
+  pesadas           Pesada[]
+  eventosSanitarios EventoSanitario[]
+  eventosReproductivos EventoReproductivo[] @relation("AnimalEvento")
+  movimientos       MovimientoHacienda[]
+
+  creadoEn          DateTime        @default(now())
+
+  @@index([establecimientoId])
+  @@index([caravanaInterna])
+}
+
+model Potrero {
+  id                String          @id @default(uuid())
+  nombre            String          // "Potrero Norte"
+  rodeo             String?         // "R2"
+  hectareas         Decimal         @db.Decimal(10,2)
+  // poligono geografico real (PostGIS) - se agrega vía migración SQL nativa
+  establecimientoId String
+  establecimiento   Establecimiento @relation(fields: [establecimientoId], references: [id])
+  animales          Animal[]
+
+  @@index([establecimientoId])
+}
+
+model Pesada {
+  id          String   @id @default(uuid())
+  animalId    String
+  animal      Animal   @relation(fields: [animalId], references: [id])
+  pesoKg      Decimal  @db.Decimal(8,2)
+  fecha       DateTime
+  observacion String?
+
+  @@index([animalId])
+}
+
+enum TipoEventoSanitario {
+  VACUNACION
+  ANTIPARASITARIO
+  TRATAMIENTO_INDIVIDUAL
+  CIRUGIA
+}
+
+model EventoSanitario {
+  id              String              @id @default(uuid())
+  animalId        String?             // null si es evento masivo por rodeo
+  animal          Animal?             @relation(fields: [animalId], references: [id])
+  tipo            TipoEventoSanitario
+  producto        String
+  dosis           String?
+  fecha           DateTime
+  proximaFecha    DateTime?
+  cantidadAnimales Int?               // para eventos masivos
+  rodeoAfectado   String?
+  responsableId   String?
+  responsable     Usuario?            @relation("EventoResponsable", fields: [responsableId], references: [id])
+  costo           Decimal?            @db.Decimal(10,2)
+
+  @@index([animalId])
+  @@index([fecha])
+}
+
+enum TipoEventoReproductivo {
+  SERVICIO
+  DIAGNOSTICO_PRENEZ
+  PARTO
+  DESTETE
+  SENALADA
+}
+
+model EventoReproductivo {
+  id        String                  @id @default(uuid())
+  animalId  String
+  animal    Animal                  @relation("AnimalEvento", fields: [animalId], references: [id])
+  tipo      TipoEventoReproductivo
+  fecha     DateTime
+  detalle   String?
+  resultado String?                 // "Preñada", "Vacía", "Cría viva", etc
+
+  @@index([animalId])
+}
+
+enum TipoMovimientoHacienda {
+  COMPRA
+  VENTA
+  TRANSFERENCIA_INTERNA
+  MUERTE
+  FAENA
+}
+
+model MovimientoHacienda {
+  id              String                  @id @default(uuid())
+  animalId        String?
+  animal          Animal?                 @relation(fields: [animalId], references: [id])
+  tipo            TipoMovimientoHacienda
+  fecha           DateTime
+  cantidadCabezas Int                     @default(1)
+  origenDestino   String
+  precioPorKg     Decimal?                @db.Decimal(10,2)
+  numeroRemito    String?
+
+  @@index([fecha])
+}
+
+// ============================================================
+// AGRICULTURA
+// ============================================================
+
+enum TipoCultivo {
+  SOJA
+  MAIZ
+  TRIGO
+  BARBECHO
+  OTRO
+}
+
+model Lote {
+  id                String          @id @default(uuid())
+  nombre            String          // "Lote 8"
+  hectareas         Decimal         @db.Decimal(10,2)
+  cultivoActual     TipoCultivo?
+  campania          String          // "2025/26"
+  fechaSiembra      DateTime?
+  pivoteId          String?
+  pivote            Pivote?         @relation(fields: [pivoteId], references: [id])
+  establecimientoId String
+  establecimiento   Establecimiento @relation(fields: [establecimientoId], references: [id])
+
+  labores           Labor[]
+  analisisSuelo     AnalisisSuelo[]
+  lecturasNdvi      LecturaNdvi[]
+
+  @@index([establecimientoId])
+}
+
+enum TipoLabor {
+  SIEMBRA
+  PULVERIZACION
+  FERTILIZACION
+  COSECHA
+  LABRANZA
+}
+
+model Labor {
+  id              String      @id @default(uuid())
+  loteId          String
+  lote            Lote        @relation(fields: [loteId], references: [id])
+  tipo            TipoLabor
+  fecha           DateTime
+  detalle         String?     // "Maíz tardío DK 7210"
+  responsable     String      // nombre libre o contratista
+  responsableUsuarioId String?
+  responsableUsuario   Usuario? @relation("LaborResponsable", fields: [responsableUsuarioId], references: [id])
+  costo           Decimal?    @db.Decimal(12,2)
+  estado          String      @default("Completada") // Completada / Programada
+
+  @@index([loteId])
+}
+
+model AnalisisSuelo {
+  id          String   @id @default(uuid())
+  loteId      String
+  lote        Lote     @relation(fields: [loteId], references: [id])
+  fecha       DateTime
+  nitrogeno   Decimal? @db.Decimal(6,2)
+  fosforo     Decimal? @db.Decimal(6,2)
+  potasio     Decimal? @db.Decimal(6,2)
+  materiaOrganica Decimal? @db.Decimal(5,2)
+
+  @@index([loteId])
+}
+
+model LecturaNdvi {
+  id        String   @id @default(uuid())
+  loteId    String
+  lote      Lote     @relation(fields: [loteId], references: [id])
+  fecha     DateTime
+  valor     Decimal  @db.Decimal(4,3) // 0.000 - 1.000
+  fuente    String   @default("Sentinel-2")
+
+  @@index([loteId])
+}
+
+// ============================================================
+// RIEGO (Pivotes)
+// ============================================================
+
+model Pivote {
+  id                String          @id @default(uuid())
+  nombre            String          // "Pivote 1"
+  establecimientoId String
+  establecimiento   Establecimiento @relation(fields: [establecimientoId], references: [id])
+  lotes             Lote[]
+  riegos            Riego[]
+}
+
+model Riego {
+  id         String   @id @default(uuid())
+  pivoteId   String
+  pivote     Pivote   @relation(fields: [pivoteId], references: [id])
+  fecha      DateTime
+  laminaMm   Decimal  @db.Decimal(6,2)
+  horasUso   Decimal? @db.Decimal(6,2)
+
+  @@index([pivoteId])
+}
+
+// ============================================================
+// MAQUINARIA
+// ============================================================
+
+model Maquina {
+  id                String          @id @default(uuid())
+  nombre            String          // "Tractor John Deere 6110J"
+  tipo              String          // Tractor, Cosechadora, Pulverizadora...
+  establecimientoId String
+  establecimiento   Establecimiento @relation(fields: [establecimientoId], references: [id])
+  horasUso          Decimal?        @db.Decimal(10,2)
+  mantenimientos    Mantenimiento[]
+}
+
+model Mantenimiento {
+  id          String   @id @default(uuid())
+  maquinaId   String
+  maquina     Maquina  @relation(fields: [maquinaId], references: [id])
+  fecha       DateTime
+  tipo        String   // Preventivo / Correctivo
+  detalle     String?
+  costo       Decimal? @db.Decimal(10,2)
+
+  @@index([maquinaId])
+}
+
+// ============================================================
+// INSUMOS Y STOCK
+// ============================================================
+
+model Insumo {
+  id                String          @id @default(uuid())
+  nombre            String          // "Ivermectina 3.15%"
+  categoria         String          // Veterinario, Agroquímico, Semilla
+  unidad            String          // L, kg, bolsas
+  stockActual       Decimal         @db.Decimal(10,2)
+  stockMinimo       Decimal         @db.Decimal(10,2)
+  establecimientoId String
+  establecimiento   Establecimiento @relation(fields: [establecimientoId], references: [id])
+  movimientos       MovimientoInsumo[]
+}
+
+model MovimientoInsumo {
+  id        String   @id @default(uuid())
+  insumoId  String
+  insumo    Insumo   @relation(fields: [insumoId], references: [id])
+  tipo      String   // Ingreso / Egreso
+  cantidad  Decimal  @db.Decimal(10,2)
+  fecha     DateTime
+  motivo    String?
+
+  @@index([insumoId])
+}
